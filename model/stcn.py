@@ -66,15 +66,42 @@ class _GraphConv(nn.Module):
 class _ResGraphConv(nn.Module):
     def __init__(self, adj, input_dim, output_dim, p_dropout):
         super(_ResGraphConv, self).__init__()
+        if p_dropout is not None:
+            self.dropout = nn.Dropout(p_dropout)
+        else:
+            self.dropout = None
+        hid_dim = output_dim // 4
+        self.relu = nn.ReLU(inplace=True)
 
-        self.gconv1 = _GraphConv(adj, input_dim, output_dim, p_dropout)
-        self.gconv2 = _GraphConv(adj, output_dim, output_dim, p_dropout)
+        self.conv_1 = nn.Conv2d(input_dim, hid_dim, 1, bias=False)
+        self.bn_1 = nn.BatchNorm2d(hid_dim, momentum=0.1)
+        self.conv_2 = nn.Conv2d(hid_dim, output_dim, 1, bias=False)
+        self.bn_2 = nn.BatchNorm2d(output_dim, momentum=0.1)
+
+        self.gconv1 = _GraphConv(adj, hid_dim, hid_dim, p_dropout)
+        self.gconv2 = _GraphConv(adj, hid_dim, hid_dim, p_dropout)
 
     def forward(self, x):
         residual = x
-        out = self.gconv1(x)
-        out = self.gconv2(out)
-        return residual + out
+
+        x = self.relu(self.bn_1(self.conv_1(x)))
+        if self.dropout is not None:
+            x = self.dropout(x)
+
+        # x: (B, C, T, K) --> (B, T, K, C)
+        x = x.permute(0, 2, 3, 1)
+        x = self.gconv1(x)
+        x = self.gconv2(x)
+
+        # x: (B, T, K, C) --> (B, C, T, K)
+        x = x.permute(0, 3, 1, 2)
+        x = self.relu(self.bn_2(self.conv_2(x)))
+        if self.dropout is not None:
+            x = self.dropout(x)
+
+        x = x + residual
+
+        return x
 
 
 class SpatialTemporalModelBase(nn.Module):
@@ -218,12 +245,7 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
             x = self.drop(self.relu(self.layers_bn[2*i](self.layers_conv[2*i](x))))
             x = res + self.drop(self.relu(self.layers_bn[2*i+1](self.layers_conv[2*i+1](x))))
 
-            # x: (B, C, T, K) --> (B, T, K, C)
-            x = x.permute(0, 2, 3, 1)
             x = self.layers_graph_conv[i](x)
-
-            # x: (B, T, K, C) --> (B, C, T, K)
-            x = x.permute(0, 3, 1, 2)
 
         return x
 
@@ -291,12 +313,7 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
             x = self.drop(self.relu(self.layers_bn[2 * i](self.layers_conv[2 * i](x))))
             x = res + self.drop(self.relu(self.layers_bn[2 * i + 1](self.layers_conv[2 * i + 1](x))))
 
-            # x: (B, C, T, K) --> (B, T, K, C)
-            x = x.permute(0, 2, 3, 1)
             x = self.layers_graph_conv[i](x)
-
-            # x: (B, T, K, C) --> (B, C, T, K)
-            x = x.permute(0, 3, 1, 2)
 
         return x
 
@@ -312,7 +329,7 @@ if __name__ == "__main__":
                              joints_right=[1, 2, 3, 4, 5, 24, 25, 26, 27, 28, 29, 30, 31])
     adj = adj_mx_from_skeleton(h36m_skeleton)
     model = SpatialTemporalModelOptimized1f(adj, num_joints_in=17, in_features=2, num_joints_out=17,
-                                            filter_widths=[3, 3, 3], channels=512)
+                                            filter_widths=[3, 3, 3], channels=1024)
     model = model.cuda()
 
     model_params = 0

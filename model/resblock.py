@@ -34,7 +34,7 @@ class TemResBlock(nn.Module):
         self.pad = nn.ConstantPad1d(padding, 0.)
 
         if final_layer:
-            self.final_pad = nn.ConstantPad1d((9, 9), 0.)
+            self.final_pad = nn.ConstantPad1d((1, 1), 0.)
 
         self.dconv1 = nn.Conv1d(channels//2, channels//2, kernel_size=k, dilation=d, bias=ub)
         self.bn2 = nn.BatchNorm1d(channels // 2, momentum=0.1)
@@ -139,7 +139,7 @@ class ResBlockSet(nn.Module):
 
         if final_set:
             if num_sets == 1:
-                dlist = dlist[1:]
+                dlist = dlist[1:-1]
             else:
                 dlist = dlist[:-1]
 
