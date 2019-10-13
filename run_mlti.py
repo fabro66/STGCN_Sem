@@ -13,7 +13,7 @@ import errno
 
 from common.graph_utils import adj_mx_from_skeleton
 from common.camera import *
-from model.temporalnet import *
+from model.stgcn import *
 from common.loss import *
 from common.generators import ChunkedGenerator, UnchunkedGenerator
 from time import time
@@ -28,6 +28,12 @@ try:
 except OSError as e:
     if e.errno != errno.EEXIST:
         raise RuntimeError("Unable to create checkpoint direction:", args.checkpoint)
+
+file_source = sys.argv[0]
+dir_file = os.path.dirname(file_source)
+log_file = os.path.join(dir_file, args.checkpoint, "log.txt")
+with open(log_file, "w") as fw:
+    fw.write(" {}".format(args))
 
 print("Loading dataset...")
 dataset_path = "data/data_3d_" + args.dataset + ".npz"
@@ -154,20 +160,20 @@ cameras_valid, poses_valid, poses_valid_2d = fetch(subjects_test, action_filter)
 
 filter_widths = [int(x) for x in args.architecture.split(",")]
 adj = adj_mx_from_skeleton(dataset.skeleton())
-
 if not args.disable_optimizations and not args.dense and args.stride == 1:
     # Use optimized model for single-frame predictions
-    model_pos_train = ByteModel(poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1],
-                                           dataset.skeleton().num_joints(), filter_widths=filter_widths,
-                                           causal=args.causal, dropout=args.dropout, channels=args.channels, num_sets=args.num_sets)
+    model_pos_train = SpatialTemporalModel(adj, poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1],
+                                                      dataset.skeleton().num_joints(), filter_widths=filter_widths,
+                                                      causal=args.causal, dropout=args.dropout, channels=args.channels)
 else:
     # When incompatible settings are detected (stride > 1, dense filters, or disabled optimization) fall back to normal model
-    model_pos_train = ByteModel(poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1],
-                                dataset.skeleton().num_joints(), filter_widths=filter_widths,
-                                causal=args.causal, dropout=args.dropout, channels=args.channels, num_sets=args.num_sets)
+    model_pos_train = SpatialTemporalModel(adj, poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1],
+                                           dataset.skeleton().num_joints(), filter_widths=filter_widths,
+                                           causal=args.causal, dropout=args.dropout, channels=args.channels, dense=args.dense)
 
-model_pos = ByteModel(poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1], dataset.skeleton().num_joints(),
-                      filter_widths=filter_widths, causal=args.causal, dropout=args.dropout, channels=args.channels, num_sets=args.num_sets)
+model_pos = SpatialTemporalModel(adj, poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1], dataset.skeleton().num_joints(),
+                                 filter_widths=filter_widths, causal=args.causal, dropout=args.dropout, channels=args.channels,
+                            dense=args.dense)
 
 receptive_field = model_pos.receptive_field()
 print("INFO: Receptive field: {} frames".format(receptive_field))
@@ -182,6 +188,9 @@ model_params = 0
 for parameter in model_pos.parameters():
     model_params += parameter.numel()
 print("INFO: Trainable parameter count: ", model_params)
+
+with open(log_file, "a") as fw:
+    fw.write("\nINFO: Trainable parameter count: {}".format(model_params))
 
 mutil_gpu = False
 cpu = False
@@ -236,6 +245,8 @@ if not args.evaluate:
     lr_decay = args.lr_decay
 
     losses_3d_train = []
+    losses_3d_train_v0 = []
+    losses_3d_train_v1 = []
     losses_3d_train_eval = []
     losses_3d_valid = []
 
@@ -272,6 +283,8 @@ if not args.evaluate:
     while epoch < args.epochs:
         start_time = time()
         epoch_loss_3d_train = 0
+        epoch_loss_3d_train_v0 = 0
+        epoch_loss_3d_train_v1 = 0
         N = 0
         model_pos_train.train()
 
@@ -288,13 +301,18 @@ if not args.evaluate:
             optimizer.zero_grad()
 
             # Predict 3D poses
-            predicted_3d_pos = model_pos_train(inputs_2d)
+            pose_v0, pose_v1, predicted_3d_pos = model_pos_train(inputs_2d)
             loss_3d_pos = mpjpe(predicted_3d_pos, inputs_3d)
+            loss_3d_v0 = mpjpe(pose_v0, inputs_3d)
+            loss_3d_v1 = mpjpe(pose_v1, inputs_3d)
 
             epoch_loss_3d_train += inputs_3d.shape[0] * inputs_3d.shape[1] * loss_3d_pos.item()
+            epoch_loss_3d_train_v0 += inputs_3d.shape[0] * inputs_3d.shape[1] * loss_3d_v0.item()
+            epoch_loss_3d_train_v1 += inputs_3d.shape[0] * inputs_3d.shape[1] * loss_3d_v1.item()
+
             N += inputs_3d.shape[0] * inputs_3d.shape[1]
 
-            loss_total = loss_3d_pos
+            loss_total = loss_3d_pos + weight_loss*loss_3d_v0 + weight_loss*loss_3d_v1
             loss_total.backward()
 
             # Control the grad of parameters
@@ -304,6 +322,8 @@ if not args.evaluate:
             optimizer.step()
 
         losses_3d_train.append(epoch_loss_3d_train / N)
+        losses_3d_train_v0.append(epoch_loss_3d_train_v0 / N)
+        losses_3d_train_v1.append(epoch_loss_3d_train_v1 / N)
 
         # End-of-epoch evaluation
         with torch.no_grad():
@@ -325,7 +345,7 @@ if not args.evaluate:
                     inputs_3d[:, :, 0] = 0
 
                     # Predict 3D poses
-                    predicted_3d_pos = model_pos(inputs_2d)
+                    _, _, predicted_3d_pos = model_pos(inputs_2d)
                     loss_3d_pos = mpjpe(predicted_3d_pos, inputs_3d)
                     epoch_loss_3d_valid += inputs_3d.shape[0] * inputs_3d.shape[1] * loss_3d_pos.item()
                     N += inputs_3d.shape[0] * inputs_3d.shape[1]
@@ -345,11 +365,10 @@ if not args.evaluate:
                     if torch.cuda.is_available():
                         inputs_3d = inputs_3d.cuda()
                         inputs_2d = inputs_2d.cuda()
-                    inputs_traj = inputs_3d[:, :, :1].clone()
                     inputs_3d[:, :, 0] = 0
 
                     # Compute 3D poses
-                    predicted_3d_pos = model_pos(inputs_2d)
+                    _, _, predicted_3d_pos = model_pos(inputs_2d)
                     loss_3d_pos = mpjpe(predicted_3d_pos, inputs_3d)
                     epoch_loss_3d_train_eval += inputs_3d.shape[0] * inputs_3d.shape[1] * loss_3d_pos.item()
                     N += inputs_3d.shape[0] * inputs_3d.shape[1]
@@ -359,34 +378,62 @@ if not args.evaluate:
         elapsed = (time() - start_time) / 60
 
         if args.no_eval:
-            print('[%d] time %.2f lr %f 3d_train %f' % (
-                    epoch + 1,
-                    elapsed,
-                    lr,
-                    losses_3d_train[-1] * 1000))
-        else:
-            print('[%d] time %.2f lr %f 3d_train %f 3d_eval %f 3d_valid %f' % (
+            print('[%d] time %.2f lr %f 3d_train %f 3d_train_v1 %f 3d_train_v0 %f' % (
                     epoch + 1,
                     elapsed,
                     lr,
                     losses_3d_train[-1] * 1000,
+                    losses_3d_train_v1[-1] * 1000,
+                    losses_3d_train_v0[-1] * 1000))
+
+            with open(log_file, "a") as fw:
+                fw.write('\n[%d] time %.2f lr %f 3d_train %f 3d_train_v0 %f 3d_train_v1 %f' % (
+                    epoch + 1,
+                    elapsed,
+                    lr,
+                    losses_3d_train[-1] * 1000,
+                    losses_3d_train_v0[-1] * 1000,
+                    losses_3d_train_v1[-1] * 1000))
+
+        else:
+            print('[%d] time %.2f lr %f 3d_train %f 3d_train_v1 %f 3d_train_v0 %f 3d_eval %f 3d_valid %f' % (
+                    epoch + 1,
+                    elapsed,
+                    lr,
+                    losses_3d_train[-1] * 1000,
+                    losses_3d_train_v1[-1] * 1000,
+                    losses_3d_train_v0[-1] * 1000,
                     losses_3d_train_eval[-1] * 1000,
                     losses_3d_valid[-1] * 1000))
 
-            # Saving the best result
-            if losses_3d_valid[-1]*1000 < loss_min:
-                chk_path = os.path.join(args.checkpoint, 'epoch_best.bin')
-                print('Saving checkpoint to', chk_path)
+            with open(log_file, "a") as fw:
+                fw.write('\n[%d] time %.2f lr %f 3d_train 3d_train_v1 %f %f 3d_train_v0 %f 3d_eval %f 3d_valid %f' % (
+                        epoch + 1,
+                        elapsed,
+                        lr,
+                        losses_3d_train[-1] * 1000,
+                        losses_3d_train_v1[-1] * 1000,
+                        losses_3d_train_v0[-1] * 1000,
+                        losses_3d_train_eval[-1] * 1000,
+                        losses_3d_valid[-1] * 1000))
 
-                torch.save({
-                    'epoch': epoch,
-                    'lr': lr,
-                    'random_state': train_generator.random_state(),
-                    'optimizer': optimizer.state_dict(),
-                    'model_pos': model_pos_train.state_dict()
-                }, chk_path)
+        # Saving the best result
+        if losses_3d_valid[-1]*1000 < loss_min:
+            chk_path = os.path.join(args.checkpoint, 'epoch_best.bin')
+            print('Saving checkpoint to', chk_path)
 
-                loss_min = losses_3d_valid[-1]*1000
+            with open(log_file, "a") as fw:
+                fw.write('\nSaving checkpoint to {}'.format(chk_path))
+
+            torch.save({
+                'epoch': epoch,
+                'lr': lr,
+                'random_state': train_generator.random_state(),
+                'optimizer': optimizer.state_dict(),
+                'model_pos': model_pos_train.state_dict()
+            }, chk_path)
+
+            loss_min = losses_3d_valid[-1]*1000
 
         # Decay learning rate exponentially
         lr *= lr_decay
@@ -395,11 +442,11 @@ if not args.evaluate:
         epoch += 1
 
         # Decay BatchNorm momentum
-        # momentum = initial_momentum * np.exp(-epoch / args.epochs * np.log(initial_momentum / final_momentum))
-        # if torch.cuda.device_count() > 1:
-        #     model_pos_train.module.set_bn_momentum(momentum)
-        # else:
-        #     model_pos_train.set_bn_momentum(momentum)
+        momentum = initial_momentum * np.exp(-epoch / args.epochs * np.log(initial_momentum / final_momentum))
+        if torch.cuda.device_count() > 1:
+            model_pos_train.module.set_bn_momentum(momentum)
+        else:
+            model_pos_train.set_bn_momentum(momentum)
 
         # Save checkpoint if necessary
         if epoch % args.checkpoint_frequency == 0:
@@ -450,7 +497,7 @@ def evaluate(test_generator, action=None, return_predictions=False):
                 inputs_2d = inputs_2d.cuda()
 
             # Positional model
-            predicted_3d_pos = model_pos(inputs_2d)
+            _, _, predicted_3d_pos = model_pos(inputs_2d)
 
             # Test-time augmentation (if enabled)
             if test_generator.augment_enabled():
@@ -498,6 +545,15 @@ def evaluate(test_generator, action=None, return_predictions=False):
     print('Protocol #3 Error (N-MPJPE):', e3, 'mm')
     print('Velocity Error (MPJVE):', ev, 'mm')
     print('----------')
+
+    with open(log_file, "a") as fw:
+        fw.write('\n----' + action + '----')
+        fw.write('\nTest time augmentation: {}'.format(test_generator.augment_enabled()))
+        fw.write('\nProtocol #1 Error (MPJPE): {} mm'.format(e1))
+        fw.write('\nProtocol #2 Error (P-MPJPE): {} mm'.format(e2))
+        fw.write('\nProtocol #3 Error (N-MPJPE): {} mm'.format(e3))
+        fw.write('\nVelocity Error (MPJVE): {} mm'.format(ev))
+        fw.write('\n----------')
 
     return e1, e2, e3, ev
 
@@ -562,6 +618,10 @@ if args.render:
 
 else:
     print('Evaluating...')
+
+    with open(log_file, "a") as fw:
+        fw.write('\nEvaluating...')
+
     all_actions = {}
     all_actions_by_subject = {}
     for subject in subjects_test:
@@ -635,11 +695,21 @@ else:
         print('Protocol #3 (N-MPJPE) action-wise average:', round(np.mean(errors_p3), 1), 'mm')
         print('Velocity      (MPJVE) action-wise average:', round(np.mean(errors_vel), 2), 'mm')
 
+        with open(log_file, "a") as fw:
+            fw.write('\nProtocol #1   (MPJPE) action-wise average: {} mm'.format(round(np.mean(errors_p1), 1)))
+            fw.write('\nProtocol #2 (P-MPJPE) action-wise average: {} mm'.format(round(np.mean(errors_p2), 1)))
+            fw.write('\nProtocol #3 (N-MPJPE) action-wise average: {} mm'.format(round(np.mean(errors_p3), 1)))
+            fw.write('\nVelocity      (MPJVE) action-wise average: {} mm'.format(round(np.mean(errors_vel), 2)))
+
 
     if not args.by_subject:
         run_evaluation(all_actions, action_filter)
     else:
         for subject in all_actions_by_subject.keys():
             print('Evaluating on subject', subject)
+
+            with open(log_file, "a") as fw:
+                fw.write('\nEvaluating on subject {}'.format(subject))
+
             run_evaluation(all_actions_by_subject[subject], action_filter)
             print('')

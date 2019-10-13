@@ -13,7 +13,7 @@ import errno
 
 from common.graph_utils import adj_mx_from_skeleton
 from common.camera import *
-from model.temporalnet import *
+from model.stcn import *
 from common.loss import *
 from common.generators import ChunkedGenerator, UnchunkedGenerator
 from time import time
@@ -157,17 +157,17 @@ adj = adj_mx_from_skeleton(dataset.skeleton())
 
 if not args.disable_optimizations and not args.dense and args.stride == 1:
     # Use optimized model for single-frame predictions
-    model_pos_train = ByteModel(poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1],
-                                           dataset.skeleton().num_joints(), filter_widths=filter_widths,
-                                           causal=args.causal, dropout=args.dropout, channels=args.channels, num_sets=args.num_sets)
+    model_pos_train = SpatialTemporalModelOptimized1f(adj, poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1],
+                                                      dataset.skeleton().num_joints(), filter_widths=filter_widths,
+                                                      causal=args.causal, dropout=args.dropout, channels=args.channels)
 else:
     # When incompatible settings are detected (stride > 1, dense filters, or disabled optimization) fall back to normal model
-    model_pos_train = ByteModel(poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1],
-                                dataset.skeleton().num_joints(), filter_widths=filter_widths,
-                                causal=args.causal, dropout=args.dropout, channels=args.channels, num_sets=args.num_sets)
+    model_pos_train = SpatialTemporalModel(adj, poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1],
+                                           dataset.skeleton().num_joints(), filter_widths=filter_widths,
+                                           causal=args.causal, dropout=args.dropout, channels=args.channels)
 
-model_pos = ByteModel(poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1], dataset.skeleton().num_joints(),
-                      filter_widths=filter_widths, causal=args.causal, dropout=args.dropout, channels=args.channels, num_sets=args.num_sets)
+model_pos = SpatialTemporalModel(adj, poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1], dataset.skeleton().num_joints(),
+                                 filter_widths=filter_widths, causal=args.causal, dropout=args.dropout, channels=args.channels)
 
 receptive_field = model_pos.receptive_field()
 print("INFO: Receptive field: {} frames".format(receptive_field))
