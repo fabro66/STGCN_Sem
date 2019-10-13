@@ -1,0 +1,10 @@
+##ignore this file##
+
+# 忽略 build/ 目录下的所有文件 不管是当前目录下的 build/ 还是子目录下的 build/ 都忽略
+__pycache__/
+
+/.idea/
+/data/*.npz
+/checkpoint/
+*.txt
+
