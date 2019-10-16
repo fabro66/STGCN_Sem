@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from model.sem_graph_conv import SemGraphConv
+from model.sem_ch_graph_conv import SemCHGraphConv
 
 
 class _GraphConv(nn.Module):
@@ -10,15 +11,15 @@ class _GraphConv(nn.Module):
         adj_2 = adj.matrix_power(2)
         adj_3 = adj.matrix_power(3)
 
-        self.gconv_1 = SemGraphConv(input_dim, output_dim, adj)
+        self.gconv_1 = SemCHGraphConv(input_dim, output_dim, adj)
         self.bn_1 = nn.BatchNorm2d(output_dim, momentum=0.1)
-        self.gconv_2 = SemGraphConv(input_dim, output_dim, adj_2)
+        self.gconv_2 = SemCHGraphConv(input_dim, output_dim, adj_2)
         self.bn_2 = nn.BatchNorm2d(output_dim, momentum=0.1)
-        self.gconv_3 = SemGraphConv(input_dim, output_dim, adj_3)
+        self.gconv_3 = SemCHGraphConv(input_dim, output_dim, adj_3)
         self.bn_3 = nn.BatchNorm2d(output_dim, momentum=0.1)
         self.relu = nn.ReLU()
 
-        self.cat_conv = nn.Conv2d(3*input_dim, output_dim, 1)
+        self.cat_conv = nn.Conv2d(3*output_dim, output_dim, 1)
         self.cat_bn = nn.BatchNorm2d(output_dim, momentum=0.1)
 
         nn.init.constant_(self.cat_conv.bias, 0)
@@ -70,23 +71,23 @@ class _ResGraphConv(nn.Module):
             self.dropout = nn.Dropout(p_dropout)
         else:
             self.dropout = None
-        hid_dim = output_dim // 4
+        hid_dim = output_dim
         self.relu = nn.ReLU(inplace=True)
 
-        self.conv_1 = nn.Conv2d(input_dim, hid_dim, 1, bias=False)
-        self.bn_1 = nn.BatchNorm2d(hid_dim, momentum=0.1)
-        self.conv_2 = nn.Conv2d(hid_dim, output_dim, 1, bias=False)
-        self.bn_2 = nn.BatchNorm2d(output_dim, momentum=0.1)
+        # self.conv_1 = nn.Conv2d(input_dim, hid_dim, 1, bias=False)
+        # self.bn_1 = nn.BatchNorm2d(hid_dim, momentum=0.1)
+        # self.conv_2 = nn.Conv2d(hid_dim, output_dim, 1, bias=False)
+        # self.bn_2 = nn.BatchNorm2d(output_dim, momentum=0.1)
 
         self.gconv1 = _GraphConv(adj, hid_dim, hid_dim, p_dropout)
         self.gconv2 = _GraphConv(adj, hid_dim, hid_dim, p_dropout)
 
     def forward(self, x):
         residual = x
-
-        x = self.relu(self.bn_1(self.conv_1(x)))
-        if self.dropout is not None:
-            x = self.dropout(x)
+        #
+        # x = self.relu(self.bn_1(self.conv_1(x)))
+        # if self.dropout is not None:
+        #     x = self.dropout(x)
 
         # x: (B, C, T, K) --> (B, T, K, C)
         x = x.permute(0, 2, 3, 1)
@@ -95,9 +96,9 @@ class _ResGraphConv(nn.Module):
 
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x.permute(0, 3, 1, 2)
-        x = self.relu(self.bn_2(self.conv_2(x)))
-        if self.dropout is not None:
-            x = self.dropout(x)
+        # x = self.relu(self.bn_2(self.conv_2(x)))
+        # if self.dropout is not None:
+        #     x = self.dropout(x)
 
         x = x + residual
 
@@ -211,6 +212,8 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
         layers_graph_conv = []
         layers_bn = []
 
+        layers_graph_conv.append(_ResGraphConv(adj, channels, channels, dropout))
+
         self.causal_shift = [(filter_widths[0]) // 2 if causal else 0]
         next_dilation = filter_widths[0]
         for i in range(1, len(filter_widths)):
@@ -234,7 +237,8 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
 
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x.permute(0, 3, 1, 2)
-        x = self.drop(self.relu(self.expand_bn(self.expand_conv(x))))
+        x = self.relu(self.expand_bn(self.expand_conv(x)))
+        x = self.layers_graph_conv[0](x)
 
         for i in range(len(self.pad) - 1):
             pad = self.pad[i + 1]
@@ -242,10 +246,10 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
             res = x[:, :, pad + shift: x.shape[2] - pad + shift]
 
             # x: (B, C, T, K)
-            x = self.drop(self.relu(self.layers_bn[2*i](self.layers_conv[2*i](x))))
-            x = res + self.drop(self.relu(self.layers_bn[2*i+1](self.layers_conv[2*i+1](x))))
+            x = self.relu(self.layers_bn[2*i](self.layers_conv[2*i](x)))
+            x = res + self.relu(self.layers_bn[2*i+1](self.layers_conv[2*i+1](x)))
 
-            x = self.layers_graph_conv[i](x)
+            x = self.layers_graph_conv[i+1](x)
 
         return x
 
@@ -283,6 +287,8 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
         layers_graph_conv = []
         layers_bn = []
 
+        layers_graph_conv.append(_ResGraphConv(adj, channels, channels, dropout))
+
         self.causal_shift = [(filter_widths[0] // 2) if causal else 0]
         next_dilation = filter_widths[0]
         for i in range(1, len(filter_widths)):
@@ -304,16 +310,17 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
     def _forward_blocks(self, x):
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x.permute(0, 3, 1, 2)
-        x = self.drop(self.relu(self.expand_bn(self.expand_conv(x))))
+        x = self.relu(self.expand_bn(self.expand_conv(x)))
+        x = self.layers_graph_conv[0](x)
 
         for i in range(len(self.pad) - 1):
             res = x[:, :, self.causal_shift[i+1] + self.filter_widths[i+1]//2 :: self.filter_widths[i+1]]
 
             # x: (B, C, T, K)
-            x = self.drop(self.relu(self.layers_bn[2 * i](self.layers_conv[2 * i](x))))
-            x = res + self.drop(self.relu(self.layers_bn[2 * i + 1](self.layers_conv[2 * i + 1](x))))
+            x = self.relu(self.layers_bn[2 * i](self.layers_conv[2 * i](x)))
+            x = res + self.relu(self.layers_bn[2 * i + 1](self.layers_conv[2 * i + 1](x)))
 
-            x = self.layers_graph_conv[i](x)
+            x = self.layers_graph_conv[i+1](x)
 
         return x
 
@@ -329,7 +336,7 @@ if __name__ == "__main__":
                              joints_right=[1, 2, 3, 4, 5, 24, 25, 26, 27, 28, 29, 30, 31])
     adj = adj_mx_from_skeleton(h36m_skeleton)
     model = SpatialTemporalModelOptimized1f(adj, num_joints_in=17, in_features=2, num_joints_out=17,
-                                            filter_widths=[3, 3, 3], channels=1024)
+                                            filter_widths=[3, 3, 3], channels=128)
     model = model.cuda()
 
     model_params = 0

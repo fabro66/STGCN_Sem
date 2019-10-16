@@ -282,6 +282,7 @@ if not args.evaluate:
             if torch.cuda.is_available():
                 inputs_3d = inputs_3d.cuda()
                 inputs_2d = inputs_2d.cuda()
+
                 weight_loss = weight_loss.cuda()
             inputs_3d[:, :, 0] = 0
 
@@ -345,6 +346,7 @@ if not args.evaluate:
                     if torch.cuda.is_available():
                         inputs_3d = inputs_3d.cuda()
                         inputs_2d = inputs_2d.cuda()
+
                     inputs_traj = inputs_3d[:, :, :1].clone()
                     inputs_3d[:, :, 0] = 0
 
@@ -395,11 +397,11 @@ if not args.evaluate:
         epoch += 1
 
         # Decay BatchNorm momentum
-        # momentum = initial_momentum * np.exp(-epoch / args.epochs * np.log(initial_momentum / final_momentum))
-        # if torch.cuda.device_count() > 1:
-        #     model_pos_train.module.set_bn_momentum(momentum)
-        # else:
-        #     model_pos_train.set_bn_momentum(momentum)
+        momentum = initial_momentum * np.exp(-epoch / args.epochs * np.log(initial_momentum / final_momentum))
+        if torch.cuda.device_count() > 1:
+            model_pos_train.module.set_bn_momentum(momentum)
+        else:
+            model_pos_train.set_bn_momentum(momentum)
 
         # Save checkpoint if necessary
         if epoch % args.checkpoint_frequency == 0:
@@ -465,6 +467,7 @@ def evaluate(test_generator, action=None, return_predictions=False):
             inputs_3d = torch.from_numpy(batch.astype('float32'))
             if torch.cuda.is_available():
                 inputs_3d = inputs_3d.cuda()
+
             inputs_3d[:, :, 0] = 0
             if test_generator.augment_enabled():
                 inputs_3d = inputs_3d[:1]
