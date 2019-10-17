@@ -202,7 +202,7 @@ class TemporalModelOptimized1f(TemporalModelBase):
 if __name__ == "__main__":
     import torch
 
-    model = TemporalModelOptimized1f(num_joints_in=17, in_features=2, num_joints_out=17, filter_widths=[3, 3, 3], channels=1024)
+    model = TemporalModelOptimized1f(num_joints_in=17, in_features=2, num_joints_out=17, filter_widths=[3, 3, 3], channels=512)
     model = model.cuda()
 
     model_params = 0

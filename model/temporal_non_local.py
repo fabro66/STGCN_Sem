@@ -4,14 +4,14 @@ import torch
 from torch import nn
 
 
-class _NonLocalBlock(nn.Module):
-    def __init__(self, in_channels, inter_channels=None, dimension=2, sub_sample=1, bn_layer=True):
-        super(_NonLocalBlock, self).__init__()
+class TemNonLocalBlock(nn.Module):
+    def __init__(self, in_channels, inter_channels=None, dimension=2, num_joints_out=17, bn_layer=False):
+        super(TemNonLocalBlock, self).__init__()
 
         assert dimension in [1, 2, 3]
 
         self.dimension = dimension
-        self.sub_sample = sub_sample
+        self.num_joints_outs = num_joints_out
 
         self.in_channels = in_channels
         self.inter_channels = inter_channels
@@ -23,15 +23,12 @@ class _NonLocalBlock(nn.Module):
 
         if dimension == 3:
             conv_nd = nn.Conv3d
-            max_pool = nn.MaxPool3d
             bn = nn.BatchNorm3d
         elif dimension == 2:
             conv_nd = nn.Conv2d
-            max_pool = nn.MaxPool2d
             bn = nn.BatchNorm2d
         elif dimension == 1:
             conv_nd = nn.Conv1d
-            max_pool = nn.MaxPool1d
             bn = nn.BatchNorm1d
         else:
             raise Exception('Error feature dimension.')
@@ -43,12 +40,16 @@ class _NonLocalBlock(nn.Module):
         self.phi = conv_nd(in_channels=self.in_channels, out_channels=self.inter_channels,
                            kernel_size=1, stride=1, padding=0)
 
-        self.concat_project = nn.Sequential(
-            nn.Conv2d(self.inter_channels * 2, 1, 1, 1, 0, bias=False),
-            nn.ReLU()
-        )
+        # self.concat_project = nn.Sequential(
+        #     nn.Conv2d(self.inter_channels * 2, 1, 1, 1, 0, bias=False),
+        #     nn.ReLU()
+        # )
 
-        nn.init.kaiming_normal_(self.concat_project[0].weight)
+        self.concat_project = nn.Parameter(torch.zeros(size=(num_joints_out, num_joints_out, 1), dtype=torch.float))
+        nn.init.xavier_uniform_(self.concat_project.data, gain=1.414)
+        self.relu = nn.ReLU(inplace=True)
+
+        # nn.init.kaiming_normal_(self.concat_project[0].weight)
         nn.init.kaiming_normal_(self.g.weight)
         nn.init.constant_(self.g.bias, 0)
         nn.init.kaiming_normal_(self.theta.weight)
@@ -72,48 +73,38 @@ class _NonLocalBlock(nn.Module):
             nn.init.constant_(self.W.weight, 0)
             nn.init.constant_(self.W.bias, 0)
 
-        if sub_sample > 1:
-            self.g = nn.Sequential(self.g, max_pool(kernel_size=sub_sample))
-            self.phi = nn.Sequential(self.phi, max_pool(kernel_size=sub_sample))
-
     def forward(self, x):
-        batch_size = x.size(0)  # x: (b, c, N)/(b, c, h, w)
+        #  x: (B, C, T, K)
 
-        # g_x: (b, N, c/2)
-        g_x = self.g(x).view(batch_size, self.inter_channels, -1)
-        g_x = g_x.permute(0, 2, 1)
+        g_x = self.g(x)
+        g_x = g_x.permute(0, 2, 3, 1)   # g_x: (B, T, K, C//2)
 
-        # (b, c/2, N, 1)
-        theta_x = self.theta(x).view(batch_size, self.inter_channels, -1, 1)
-        # (b, c/2, 1, N)
-        phi_x = self.phi(x).view(batch_size, self.inter_channels, 1, -1)
+        # theta_x = (B, T, K, 1, C//2)
+        theta_x = self.theta(x).permute(0, 2, 3, 1).contiguous()
+        theta_x = theta_x.unsqueeze(dim=-2)
+        # phi_x = (B, T, 1, K, C//2)
+        phi_x = self.phi(x).permute(0, 2, 3, 1).contiguous()
+        phi_x = phi_x.unsqueeze(dim=-3)
 
-        # h: N, w: N
+        # h: K, w: K
         h = theta_x.size(2)
         w = phi_x.size(3)
-        theta_x = theta_x.expand(-1, -1, -1, w)  # (b, c/2, N, N)
-        phi_x = phi_x.expand(-1, -1, h, -1)
+        theta_x = theta_x.expand(-1, -1, -1, w, -1)  # (B, T, K, K, C//2)
+        phi_x = phi_x.expand(-1, -1, h, -1, -1)
 
-        # concat_feature: (b, c, N, N)
-        concat_feature = torch.cat([theta_x, phi_x], dim=1)
-        f = self.concat_project(concat_feature)  # (b, 1, N, N)
-        b, _, h, w = f.size()
-        f = f.view(b, h, w)  # (b, N, N)
+        # concat_feature: (B, T, K, K, C)
+        concat_feature = torch.cat([theta_x, phi_x], dim=-1)
+        f = self.relu(torch.matmul(concat_feature, self.concat_project))  # (b, 1, N, N)
+        b, t, k, k, _ = f.size()
+        f = f.view(b, t, k, k)  # (B, T, K, K)
 
         N = f.size(-1)
         f_div_C = f / N
 
-        # y: (b, c, N)
+        # y: (B, T, N, C//2)
         y = torch.matmul(f_div_C, g_x)
-        y = y.permute(0, 2, 1).contiguous()
-        y = y.view(batch_size, self.inter_channels, *x.size()[2:])
+        y = y.permute(0, 3, 1, 2).contiguous()
         W_y = self.W(y)
         z = W_y + x
 
         return z
-
-
-class GraphNonLocal(_NonLocalBlock):
-    def __init__(self, in_channels, inter_channels=None, sub_sample=1, bn_layer=True):
-        super(GraphNonLocal, self).__init__(in_channels, inter_channels=inter_channels, dimension=1,
-                                            sub_sample=sub_sample, bn_layer=bn_layer)

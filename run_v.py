@@ -29,6 +29,12 @@ except OSError as e:
     if e.errno != errno.EEXIST:
         raise RuntimeError("Unable to create checkpoint direction:", args.checkpoint)
 
+file_source = sys.argv[0]
+dir_file = os.path.dirname(file_source)
+log_file = os.path.join(dir_file, args.checkpoint, "log.txt")
+with open(log_file, "w") as fw:
+    fw.write(" {}".format(args))
+
 print("Loading dataset...")
 dataset_path = "data/data_3d_" + args.dataset + ".npz"
 if args.dataset == "h36m":
@@ -183,16 +189,19 @@ for parameter in model_pos.parameters():
     model_params += parameter.numel()
 print("INFO: Trainable parameter count: ", model_params)
 
+with open(log_file, "a") as fw:
+    fw.write("\nINFO: Trainable parameter count: {}".format(model_params))
+
 mutil_gpu = False
 cpu = False
 gpu = False
 # Multi-gpu training
 if torch.cuda.device_count() > 1:
     print("The number of GPU: {}".format(torch.cuda.device_count()))
-    model_pos = model_pos.cuda()
-    model_pos_train = model_pos_train.cuda()
-    model_pos = nn.DataParallel(model_pos, device_ids=[0, 1])
-    model_pos_train = nn.DataParallel(model_pos_train, device_ids=[0, 1])
+    model_pos = model_pos.cuda(1)
+    model_pos_train = model_pos_train.cuda(1)
+    model_pos = nn.DataParallel(model_pos, device_ids=[1, 0])
+    model_pos_train = nn.DataParallel(model_pos_train, device_ids=[1, 0])
     mutil_gpu = True
 elif torch.cuda.is_available() and torch.cuda.device_count() == 1:
     model_pos = model_pos.cuda()
@@ -280,8 +289,8 @@ if not args.evaluate:
             inputs_3d = torch.from_numpy(batch_3d.astype('float32'))
             inputs_2d = torch.from_numpy(batch_2d.astype('float32'))
             if torch.cuda.is_available():
-                inputs_3d = inputs_3d.cuda()
-                inputs_2d = inputs_2d.cuda()
+                inputs_3d = inputs_3d.cuda(1)
+                inputs_2d = inputs_2d.cuda(1)
 
                 weight_loss = weight_loss.cuda()
             inputs_3d[:, :, 0] = 0
@@ -320,8 +329,8 @@ if not args.evaluate:
                     inputs_3d = torch.from_numpy(batch.astype('float32'))
                     inputs_2d = torch.from_numpy(batch_2d.astype('float32'))
                     if torch.cuda.is_available():
-                        inputs_3d = inputs_3d.cuda()
-                        inputs_2d = inputs_2d.cuda()
+                        inputs_3d = inputs_3d.cuda(1)
+                        inputs_2d = inputs_2d.cuda(1)
 
                     inputs_3d[:, :, 0] = 0
 
@@ -344,8 +353,8 @@ if not args.evaluate:
                     inputs_3d = torch.from_numpy(batch.astype('float32'))
                     inputs_2d = torch.from_numpy(batch_2d.astype('float32'))
                     if torch.cuda.is_available():
-                        inputs_3d = inputs_3d.cuda()
-                        inputs_2d = inputs_2d.cuda()
+                        inputs_3d = inputs_3d.cuda(1)
+                        inputs_2d = inputs_2d.cuda(1)
 
                     inputs_traj = inputs_3d[:, :, :1].clone()
                     inputs_3d[:, :, 0] = 0
@@ -375,10 +384,22 @@ if not args.evaluate:
                     losses_3d_train_eval[-1] * 1000,
                     losses_3d_valid[-1] * 1000))
 
+            with open(log_file, "a") as fw:
+                fw.write('\n[%d] time %.2f lr %f 3d_train %f 3d_eval %f 3d_valid %f' % (
+                        epoch + 1,
+                        elapsed,
+                        lr,
+                        losses_3d_train[-1] * 1000,
+                        losses_3d_train_eval[-1] * 1000,
+                        losses_3d_valid[-1] * 1000))
+
             # Saving the best result
             if losses_3d_valid[-1]*1000 < loss_min:
                 chk_path = os.path.join(args.checkpoint, 'epoch_best.bin')
                 print('Saving checkpoint to', chk_path)
+
+                with open(log_file, "a") as fw:
+                    fw.write('\nSaving checkpoint to {}'.format(chk_path))
 
                 torch.save({
                     'epoch': epoch,
@@ -397,11 +418,11 @@ if not args.evaluate:
         epoch += 1
 
         # Decay BatchNorm momentum
-        momentum = initial_momentum * np.exp(-epoch / args.epochs * np.log(initial_momentum / final_momentum))
-        if torch.cuda.device_count() > 1:
-            model_pos_train.module.set_bn_momentum(momentum)
-        else:
-            model_pos_train.set_bn_momentum(momentum)
+        # momentum = initial_momentum * np.exp(-epoch / args.epochs * np.log(initial_momentum / final_momentum))
+        # if torch.cuda.device_count() > 1:
+        #     model_pos_train.module.set_bn_momentum(momentum)
+        # else:
+        #     model_pos_train.set_bn_momentum(momentum)
 
         # Save checkpoint if necessary
         if epoch % args.checkpoint_frequency == 0:
@@ -449,7 +470,7 @@ def evaluate(test_generator, action=None, return_predictions=False):
         for _, batch, batch_2d in test_generator.next_epoch():
             inputs_2d = torch.from_numpy(batch_2d.astype('float32'))
             if torch.cuda.is_available():
-                inputs_2d = inputs_2d.cuda()
+                inputs_2d = inputs_2d.cuda(1)
 
             # Positional model
             predicted_3d_pos = model_pos(inputs_2d)
@@ -466,7 +487,7 @@ def evaluate(test_generator, action=None, return_predictions=False):
 
             inputs_3d = torch.from_numpy(batch.astype('float32'))
             if torch.cuda.is_available():
-                inputs_3d = inputs_3d.cuda()
+                inputs_3d = inputs_3d.cuda(1)
 
             inputs_3d[:, :, 0] = 0
             if test_generator.augment_enabled():
@@ -501,6 +522,15 @@ def evaluate(test_generator, action=None, return_predictions=False):
     print('Protocol #3 Error (N-MPJPE):', e3, 'mm')
     print('Velocity Error (MPJVE):', ev, 'mm')
     print('----------')
+
+    with open(log_file, "a") as fw:
+        fw.write('\n----' + action + '----')
+        fw.write('\nTest time augmentation: {}'.format(test_generator.augment_enabled()))
+        fw.write('\nProtocol #1 Error (MPJPE): {} mm'.format(e1))
+        fw.write('\nProtocol #2 Error (P-MPJPE): {} mm'.format(e2))
+        fw.write('\nProtocol #3 Error (N-MPJPE): {} mm'.format(e3))
+        fw.write('\nVelocity Error (MPJVE): {} mm'.format(ev))
+        fw.write('\n----------')
 
     return e1, e2, e3, ev
 
@@ -565,6 +595,10 @@ if args.render:
 
 else:
     print('Evaluating...')
+
+    with open(log_file, "a") as fw:
+        fw.write('\nEvaluating...')
+
     all_actions = {}
     all_actions_by_subject = {}
     for subject in subjects_test:
@@ -638,11 +672,21 @@ else:
         print('Protocol #3 (N-MPJPE) action-wise average:', round(np.mean(errors_p3), 1), 'mm')
         print('Velocity      (MPJVE) action-wise average:', round(np.mean(errors_vel), 2), 'mm')
 
+        with open(log_file, "a") as fw:
+            fw.write('\nProtocol #1   (MPJPE) action-wise average: {} mm'.format(round(np.mean(errors_p1), 1)))
+            fw.write('\nProtocol #2 (P-MPJPE) action-wise average: {} mm'.format(round(np.mean(errors_p2), 1)))
+            fw.write('\nProtocol #3 (N-MPJPE) action-wise average: {} mm'.format(round(np.mean(errors_p3), 1)))
+            fw.write('\nVelocity      (MPJVE) action-wise average: {} mm'.format(round(np.mean(errors_vel), 2)))
+
 
     if not args.by_subject:
         run_evaluation(all_actions, action_filter)
     else:
         for subject in all_actions_by_subject.keys():
             print('Evaluating on subject', subject)
+
+            with open(log_file, "a") as fw:
+                fw.write('\nEvaluating on subject {}'.format(subject))
+
             run_evaluation(all_actions_by_subject[subject], action_filter)
             print('')
