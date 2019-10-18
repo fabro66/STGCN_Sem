@@ -3,7 +3,7 @@ import math
 import torch.nn as nn
 from model.sem_graph_conv import SemGraphConv
 from model.sem_ch_graph_conv import SemCHGraphConv
-from model.graph_non_local import _NonLocalBlock
+from model.graph_attention_network import _NonLocalBlock
 # from model.temporal_non_local import TemNonLocalBlock
 
 
@@ -14,11 +14,11 @@ class _GraphConv(nn.Module):
         adj_2 = adj.matrix_power(2)
         adj_3 = adj.matrix_power(3)
 
-        self.gconv_1 = SemCHGraphConv(input_dim, output_dim, adj)
+        self.gconv_1 = SemGraphConv(input_dim, output_dim, adj)
         self.bn_1 = nn.BatchNorm2d(output_dim, momentum=0.1)
-        self.gconv_2 = SemCHGraphConv(input_dim, output_dim, adj_2)
+        self.gconv_2 = SemGraphConv(input_dim, output_dim, adj_2)
         self.bn_2 = nn.BatchNorm2d(output_dim, momentum=0.1)
-        self.gconv_3 = SemCHGraphConv(input_dim, output_dim, adj_3)
+        self.gconv_3 = SemGraphConv(input_dim, output_dim, adj_3)
         self.bn_3 = nn.BatchNorm2d(output_dim, momentum=0.1)
         self.relu = nn.ReLU()
 
@@ -108,15 +108,16 @@ class _ResGraphConv(nn.Module):
 
 
 class _GraphNonLocal(nn.Module):
-    def __init__(self, in_channels, inter_channels, dim=2, bn_layer=True):
+    def __init__(self, adj, in_channels, inter_channels, dim=2):
         super(_GraphNonLocal, self).__init__()
 
         self.num_non_local = in_channels // inter_channels
-        layers_non_local = []
-        for i in range(self.num_non_local):
-            layers_non_local.append(_NonLocalBlock(in_channels, inter_channels, dimension=dim, bn_layer=bn_layer))
 
-        self.layers_non_local = nn.ModuleList(layers_non_local)
+        attentions = [_NonLocalBlock(adj, in_channels, inter_channels, dimension=dim) for _ in range(self.num_non_local)]
+        self.attentions = nn.ModuleList(attentions)
+        # for i, attention in enumerate(self.attentions):
+        #     self.add_module("attention_{}".format(i), attention)
+
         self.W = nn.Parameter(torch.zeros(size=(in_channels, in_channels), dtype=torch.float))
         nn.init.xavier_uniform_(self.W.data, gain=1.414)
 
@@ -128,12 +129,7 @@ class _GraphNonLocal(nn.Module):
         # x: (B*T, C, K)
         x = x.permute(0, 2, 1)
 
-        x_ = self.layers_non_local[0](x)
-        y_ = self.layers_non_local[1](x)
-        z_ = self.layers_non_local[2](x)
-        k_ = self.layers_non_local[3](x)
-
-        x = torch.cat((x_, y_, z_, k_), dim=1)
+        x = torch.cat([self.attentions[i](x) for i in range(len(self.attentions))], dim=1)
 
         # x: (B*T, C, K) --> (B*T, K, C)
         x = x.permute(0, 2, 1).contiguous()
@@ -154,11 +150,12 @@ class GraphConvNonLocal(nn.Module):
             self.dropout = None
         hid_dim = output_dim
         self.relu = nn.ReLU(inplace=True)
+        self.adj = adj.matrix_power(3)
 
         self.gconv1 = _GraphConv(adj, input_dim, hid_dim, p_dropout)
-        self.gconv2 = _GraphConv(adj, hid_dim, output_dim, p_dropout)
+        # self.gconv2 = _GraphConv(adj, hid_dim, output_dim, p_dropout)
 
-        self.non_local = _GraphNonLocal(input_dim, input_dim//4, dim=1, bn_layer=False)
+        self.non_local = _GraphNonLocal(adj, input_dim, input_dim//4, dim=1)
         self.cat_conv = nn.Conv2d(2*output_dim, output_dim, 1)
         self.cat_bn = nn.BatchNorm2d(output_dim, momentum=0.1)
 
@@ -170,9 +167,8 @@ class GraphConvNonLocal(nn.Module):
         # x: (B, C, T, K) --> (B, T, K, C)
         x = x.permute(0, 2, 3, 1)
         y = self.non_local(x)
-
         x = self.gconv1(x)
-        x = self.gconv2(x)
+        # x = self.gconv2(x)
 
         x = torch.cat((x, y), dim=-1)
         # x: (B, T, K, C) --> (B, C, T, K)

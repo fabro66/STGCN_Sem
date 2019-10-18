@@ -195,13 +195,14 @@ with open(log_file, "a") as fw:
 mutil_gpu = False
 cpu = False
 gpu = False
+cuda1 = torch.device('cuda: 1')
 # Multi-gpu training
 if torch.cuda.device_count() > 1:
     print("The number of GPU: {}".format(torch.cuda.device_count()))
-    model_pos = model_pos.cuda()
-    model_pos_train = model_pos_train.cuda()
-    model_pos = nn.DataParallel(model_pos, device_ids=[0, 1])
-    model_pos_train = nn.DataParallel(model_pos_train, device_ids=[0, 1])
+    model_pos = model_pos.cuda(cuda1)
+    model_pos_train = model_pos_train.cuda(cuda1)
+    model_pos = nn.DataParallel(model_pos, device_ids=[1, 0])
+    model_pos_train = nn.DataParallel(model_pos_train, device_ids=[1, 0])
     mutil_gpu = True
 elif torch.cuda.is_available() and torch.cuda.device_count() == 1:
     model_pos = model_pos.cuda()
@@ -289,8 +290,8 @@ if not args.evaluate:
             inputs_3d = torch.from_numpy(batch_3d.astype('float32'))
             inputs_2d = torch.from_numpy(batch_2d.astype('float32'))
             if torch.cuda.is_available():
-                inputs_3d = inputs_3d.cuda()
-                inputs_2d = inputs_2d.cuda()
+                inputs_3d = inputs_3d.cuda(cuda1)
+                inputs_2d = inputs_2d.cuda(cuda1)
 
                 weight_loss = weight_loss.cuda()
             inputs_3d[:, :, 0] = 0
@@ -329,8 +330,8 @@ if not args.evaluate:
                     inputs_3d = torch.from_numpy(batch.astype('float32'))
                     inputs_2d = torch.from_numpy(batch_2d.astype('float32'))
                     if torch.cuda.is_available():
-                        inputs_3d = inputs_3d.cuda()
-                        inputs_2d = inputs_2d.cuda()
+                        inputs_3d = inputs_3d.cuda(cuda1)
+                        inputs_2d = inputs_2d.cuda(cuda1)
 
                     inputs_3d[:, :, 0] = 0
 
@@ -353,8 +354,8 @@ if not args.evaluate:
                     inputs_3d = torch.from_numpy(batch.astype('float32'))
                     inputs_2d = torch.from_numpy(batch_2d.astype('float32'))
                     if torch.cuda.is_available():
-                        inputs_3d = inputs_3d.cuda()
-                        inputs_2d = inputs_2d.cuda()
+                        inputs_3d = inputs_3d.cuda(cuda1)
+                        inputs_2d = inputs_2d.cuda(cuda1)
 
                     inputs_traj = inputs_3d[:, :, :1].clone()
                     inputs_3d[:, :, 0] = 0
@@ -470,7 +471,7 @@ def evaluate(test_generator, action=None, return_predictions=False):
         for _, batch, batch_2d in test_generator.next_epoch():
             inputs_2d = torch.from_numpy(batch_2d.astype('float32'))
             if torch.cuda.is_available():
-                inputs_2d = inputs_2d.cuda()
+                inputs_2d = inputs_2d.cuda(cuda1)
 
             # Positional model
             predicted_3d_pos = model_pos(inputs_2d)
@@ -487,7 +488,7 @@ def evaluate(test_generator, action=None, return_predictions=False):
 
             inputs_3d = torch.from_numpy(batch.astype('float32'))
             if torch.cuda.is_available():
-                inputs_3d = inputs_3d.cuda()
+                inputs_3d = inputs_3d.cuda(cuda1)
 
             inputs_3d[:, :, 0] = 0
             if test_generator.augment_enabled():
