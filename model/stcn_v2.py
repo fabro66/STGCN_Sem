@@ -14,11 +14,11 @@ class _GraphConv(nn.Module):
         adj_2 = adj.matrix_power(2)
         adj_3 = adj.matrix_power(3)
 
-        self.gconv_1 = SemGraphConv(input_dim, output_dim, adj)
+        self.gconv_1 = SemCHGraphConv(input_dim, output_dim, adj)
         self.bn_1 = nn.BatchNorm2d(output_dim, momentum=0.1)
-        self.gconv_2 = SemGraphConv(input_dim, output_dim, adj_2)
+        self.gconv_2 = SemCHGraphConv(input_dim, output_dim, adj_2)
         self.bn_2 = nn.BatchNorm2d(output_dim, momentum=0.1)
-        self.gconv_3 = SemGraphConv(input_dim, output_dim, adj_3)
+        self.gconv_3 = SemCHGraphConv(input_dim, output_dim, adj_3)
         self.bn_3 = nn.BatchNorm2d(output_dim, momentum=0.1)
         self.relu = nn.ReLU()
 
@@ -162,22 +162,23 @@ class GraphConvNonLocal(nn.Module):
         nn.init.constant_(self.cat_conv.bias, 0)
 
     def forward(self, x):
-        residual = x
 
         # x: (B, C, T, K) --> (B, T, K, C)
         x = x.permute(0, 2, 3, 1)
-        y = self.non_local(x)
+
+        residual = x
         x = self.gconv1(x)
+        x = residual + x
         # x = self.gconv2(x)
 
-        x = torch.cat((x, y), dim=-1)
+        residual = x
+        x = self.non_local(x)
+        x = residual + x
+
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x.permute(0, 3, 1, 2)
 
-        output = self.relu(self.cat_bn(self.cat_conv(x)))
-        output = output + residual
-
-        return output
+        return x
 
 
 class SpatialTemporalModelBase(nn.Module):
