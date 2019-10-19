@@ -153,7 +153,7 @@ class GraphConvNonLocal(nn.Module):
         self.adj = adj.matrix_power(3)
 
         self.gconv1 = _GraphConv(adj, input_dim, hid_dim, p_dropout)
-        # self.gconv2 = _GraphConv(adj, hid_dim, output_dim, p_dropout)
+        self.gconv2 = _GraphConv(adj, hid_dim, output_dim, p_dropout)
 
         self.non_local = _GraphNonLocal(adj, input_dim, input_dim//4, dim=1)
         self.cat_conv = nn.Conv2d(2*output_dim, output_dim, 1)
@@ -168,8 +168,8 @@ class GraphConvNonLocal(nn.Module):
 
         residual = x
         x = self.gconv1(x)
+        x = self.gconv2(x)
         x = residual + x
-        # x = self.gconv2(x)
 
         residual = x
         x = self.non_local(x)
