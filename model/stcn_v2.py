@@ -25,9 +25,9 @@ class _GraphConv(nn.Module):
         nn.init.constant_(self.cat_conv.bias, 0)
 
         if dropout is not None:
-            self.dropout = nn.Dropout(dropout)
+            self.drop = nn.Dropout(dropout)
         else:
-            self.dropout = None
+            self.drop = None
 
     def forward(self, x):
         # x: (B, T, K, C)
@@ -41,9 +41,9 @@ class _GraphConv(nn.Module):
         x = self.bn_1(x)
         y = self.bn_2(y)
 
-        if self.dropout is not None:
-            x = self.dropout(self.relu(x))
-            y = self.dropout(self.relu(y))
+        if self.drop is not None:
+            x = self.drop(self.relu(x))
+            y = self.drop(self.relu(y))
         else:
             x = self.relu(x)
             y = self.relu(y)
@@ -51,8 +51,8 @@ class _GraphConv(nn.Module):
         output = torch.cat((x, y), dim=1)
         output = self.cat_bn(self.cat_conv(output))
 
-        if self.dropout is not None:
-            output = self.dropout(self.relu(output))
+        if self.drop is not None:
+            output = self.drop(self.relu(output))
         else:
             output = self.relu(output)
         output = output.permute(0, 2, 3, 1)
@@ -61,8 +61,12 @@ class _GraphConv(nn.Module):
 
 
 class _GraphNonLocal(nn.Module):
-    def __init__(self, adj, in_channels, inter_channels, dim=2):
+    def __init__(self, adj, in_channels, inter_channels, dim=2, dropout=None):
         super(_GraphNonLocal, self).__init__()
+        if dropout is not None:
+            self.drop = nn.Dropout(dropout)
+        else:
+            self.drop = None
 
         self.num_non_local = in_channels // inter_channels
 
@@ -92,7 +96,11 @@ class _GraphNonLocal(nn.Module):
 
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x.permute(0, 3, 1, 2)
-        x = self.relu(self.bn(self.conv(x)))
+
+        if self.drop is not None:
+            x = self.drop(self.relu(self.bn(self.conv(x))))
+        else:
+            x = self.relu(self.bn(self.conv(x)))
 
         # x: (B, C, T, K) --> (B, T, K, C)
         x = x.permute(0, 2, 3, 1)
@@ -101,20 +109,20 @@ class _GraphNonLocal(nn.Module):
 
 
 class GraphConvNonLocal(nn.Module):
-    def __init__(self, adj, input_dim, output_dim, p_dropout):
+    def __init__(self, adj, input_dim, output_dim, dropout=None):
         super(GraphConvNonLocal, self).__init__()
-        if p_dropout is not None:
-            self.dropout = nn.Dropout(p_dropout)
+        if dropout is not None:
+            self.drop = nn.Dropout(dropout)
         else:
-            self.dropout = None
+            self.drop = None
         hid_dim = output_dim
         self.relu = nn.ReLU(inplace=True)
         self.adj = adj.matrix_power(2)
 
-        self.gconv1 = _GraphConv(adj, input_dim, hid_dim, p_dropout)
-        self.gconv2 = _GraphConv(adj, hid_dim, output_dim, p_dropout)
+        self.gconv1 = _GraphConv(adj, input_dim, hid_dim, dropout)
+        self.gconv2 = _GraphConv(adj, hid_dim, output_dim, dropout)
 
-        self.non_local = _GraphNonLocal(adj, input_dim, input_dim//4, dim=1)
+        self.non_local = _GraphNonLocal(adj, input_dim, input_dim//4, dim=1, dropout=dropout)
         self.cat_conv = nn.Conv2d(3*output_dim, 2*output_dim, 1)
         self.cat_bn = nn.BatchNorm2d(2*output_dim, momentum=0.1)
 
@@ -130,7 +138,10 @@ class GraphConvNonLocal(nn.Module):
 
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x.permute(0, 3, 1, 2)
-        x = self.relu(self.cat_bn(self.cat_conv(x)))
+        if self.drop is not None:
+            x = self.drop(self.relu(self.cat_bn(self.cat_conv(x))))
+        else:
+            x = self.relu(self.cat_bn(self.cat_conv(x)))
         return x
 
 
@@ -241,7 +252,7 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
         # layers_non_local = []
         layers_bn = []
 
-        layers_graph_conv.append(GraphConvNonLocal(adj, channels, channels, p_dropout=None))
+        layers_graph_conv.append(GraphConvNonLocal(adj, channels, channels, dropout=dropout))
         # layers_non_local.append(_NonLocalBlock(channels, channels // 2, dimension=2, bn_layer=True))
 
         self.causal_shift = [(filter_widths[0]) // 2 if causal else 0]
@@ -256,7 +267,7 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
             layers_conv.append(nn.Conv2d(2**i*channels, 2**i*channels, 1, dilation=1, bias=False))
             layers_bn.append(nn.BatchNorm2d(2**i*channels, momentum=0.1))
 
-            layers_graph_conv.append(GraphConvNonLocal(adj, 2**i*channels, 2**i*channels, p_dropout=None))
+            layers_graph_conv.append(GraphConvNonLocal(adj, 2**i*channels, 2**i*channels, dropout=dropout))
             # layers_non_local.append(_NonLocalBlock(channels, channels // 2, dimension=2, bn_layer=True))
 
             next_dilation *= filter_widths[i]
@@ -272,7 +283,7 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
         x = x.permute(0, 3, 1, 2)
         x = self.relu(self.expand_bn(self.expand_conv(x)))
         # x = self.layers_non_local[0](x)
-        x = self.layers_graph_conv[0](x)
+        x = self.drop(self.layers_graph_conv[0](x))
 
         for i in range(len(self.pad) - 1):
             pad = self.pad[i + 1]
@@ -280,8 +291,8 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
             res = x[:, :, pad + shift: x.shape[2] - pad + shift]
 
             # x: (B, C, T, K)
-            x = self.relu(self.layers_bn[2*i](self.layers_conv[2*i](x)))
-            x = res + self.relu(self.layers_bn[2*i+1](self.layers_conv[2*i+1](x)))
+            x = self.drop(self.relu(self.layers_bn[2*i](self.layers_conv[2*i](x))))
+            x = res + self.drop(self.relu(self.layers_bn[2*i+1](self.layers_conv[2*i+1](x))))
 
             # x = self.layers_non_local[i+1](x)
             x = self.layers_graph_conv[i+1](x)
@@ -323,7 +334,7 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
         # layers_non_local = []
         layers_bn = []
 
-        layers_graph_conv.append(GraphConvNonLocal(adj, channels, channels, p_dropout=None))
+        layers_graph_conv.append(GraphConvNonLocal(adj, channels, channels, dropout=dropout))
         # layers_non_local.append(_NonLocalBlock(channels, channels//2, dimension=2, bn_layer=True))
 
         self.causal_shift = [(filter_widths[0] // 2) if causal else 0]
@@ -337,7 +348,7 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
             layers_conv.append(nn.Conv2d(2**i*channels, 2**i*channels, 1, dilation=1, bias=False))
             layers_bn.append(nn.BatchNorm2d(2**i*channels, momentum=0.1))
 
-            layers_graph_conv.append(GraphConvNonLocal(adj, 2**i*channels, 2**i*channels, p_dropout=None))
+            layers_graph_conv.append(GraphConvNonLocal(adj, 2**i*channels, 2**i*channels, dropout=dropout))
             # layers_non_local.append(_NonLocalBlock(channels, channels // 2, dimension=2, bn_layer=True))
 
             next_dilation *= filter_widths[i]
@@ -350,7 +361,7 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
     def _forward_blocks(self, x):
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x.permute(0, 3, 1, 2)
-        x = self.relu(self.expand_bn(self.expand_conv(x)))
+        x = self.drop(self.relu(self.expand_bn(self.expand_conv(x))))
         # x = self.layers_non_local[0](x)
         x = self.layers_graph_conv[0](x)
 
@@ -358,8 +369,8 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
             res = x[:, :, self.causal_shift[i+1] + self.filter_widths[i+1]//2 :: self.filter_widths[i+1]]
 
             # x: (B, C, T, K)
-            x = self.relu(self.layers_bn[2 * i](self.layers_conv[2 * i](x)))
-            x = res + self.relu(self.layers_bn[2 * i + 1](self.layers_conv[2 * i + 1](x)))
+            x = self.drop(self.relu(self.layers_bn[2 * i](self.layers_conv[2 * i](x))))
+            x = res + self.drop(self.relu(self.layers_bn[2 * i + 1](self.layers_conv[2 * i + 1](x))))
 
             # x = self.layers_non_local[i+1](x)
             x = self.layers_graph_conv[i+1](x)
@@ -377,7 +388,7 @@ if __name__ == "__main__":
                              joints_left=[6, 7, 8, 9, 10, 16, 17, 18, 19, 20, 21, 22, 23],
                              joints_right=[1, 2, 3, 4, 5, 24, 25, 26, 27, 28, 29, 30, 31])
     adj = adj_mx_from_skeleton(h36m_skeleton)
-    model = SpatialTemporalModelOptimized1f(adj, num_joints_in=17, in_features=2, num_joints_out=17,
+    model = SpatialTemporalModel(adj, num_joints_in=17, in_features=2, num_joints_out=17,
                                             filter_widths=[3, 3, 3], channels=128)
     model = model.cuda()
 
