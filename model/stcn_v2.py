@@ -12,17 +12,14 @@ class _GraphConv(nn.Module):
         super(_GraphConv, self).__init__()
 
         adj_2 = adj.matrix_power(2)
-        adj_3 = adj.matrix_power(3)
 
         self.gconv_1 = SemCHGraphConv(input_dim, output_dim, adj)
         self.bn_1 = nn.BatchNorm2d(output_dim, momentum=0.1)
         self.gconv_2 = SemCHGraphConv(input_dim, output_dim, adj_2)
         self.bn_2 = nn.BatchNorm2d(output_dim, momentum=0.1)
-        self.gconv_3 = SemCHGraphConv(input_dim, output_dim, adj_3)
-        self.bn_3 = nn.BatchNorm2d(output_dim, momentum=0.1)
         self.relu = nn.ReLU()
 
-        self.cat_conv = nn.Conv2d(3*output_dim, output_dim, 1)
+        self.cat_conv = nn.Conv2d(2*output_dim, output_dim, 1)
         self.cat_bn = nn.BatchNorm2d(output_dim, momentum=0.1)
 
         nn.init.constant_(self.cat_conv.bias, 0)
@@ -36,26 +33,22 @@ class _GraphConv(nn.Module):
         # x: (B, T, K, C)
         x_ = self.gconv_1(x)
         y_ = self.gconv_2(x)
-        z_ = self.gconv_3(x)
 
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x_.permute(0, 3, 1, 2)
         y = y_.permute(0, 3, 1, 2)
-        z = z_.permute(0, 3, 1, 2)
+
         x = self.bn_1(x)
         y = self.bn_2(y)
-        z = self.bn_3(z)
 
         if self.dropout is not None:
             x = self.dropout(self.relu(x))
             y = self.dropout(self.relu(y))
-            z = self.dropout(self.relu(z))
         else:
             x = self.relu(x)
             y = self.relu(y)
-            z = self.relu(z)
 
-        output = torch.cat((x, y, z), dim=1)
+        output = torch.cat((x, y), dim=1)
         output = self.cat_bn(self.cat_conv(output))
 
         if self.dropout is not None:
@@ -67,46 +60,6 @@ class _GraphConv(nn.Module):
         return output
 
 
-class _ResGraphConv(nn.Module):
-    def __init__(self, adj, input_dim, output_dim, p_dropout):
-        super(_ResGraphConv, self).__init__()
-        if p_dropout is not None:
-            self.dropout = nn.Dropout(p_dropout)
-        else:
-            self.dropout = None
-        hid_dim = output_dim
-        self.relu = nn.ReLU(inplace=True)
-
-        # self.conv_1 = nn.Conv2d(input_dim, hid_dim, 1, bias=False)
-        # self.bn_1 = nn.BatchNorm2d(hid_dim, momentum=0.1)
-        # self.conv_2 = nn.Conv2d(hid_dim, output_dim, 1, bias=False)
-        # self.bn_2 = nn.BatchNorm2d(output_dim, momentum=0.1)
-
-        self.gconv1 = _GraphConv(adj, hid_dim, hid_dim, p_dropout)
-        self.gconv2 = _GraphConv(adj, hid_dim, hid_dim, p_dropout)
-
-    def forward(self, x):
-        residual = x
-        # x = self.relu(self.bn_1(self.conv_1(x)))
-        # if self.dropout is not None:
-        #     x = self.dropout(x)
-
-        # x: (B, C, T, K) --> (B, T, K, C)
-        x = x.permute(0, 2, 3, 1)
-        x = self.gconv1(x)
-        x = self.gconv2(x)
-
-        # x: (B, T, K, C) --> (B, C, T, K)
-        x = x.permute(0, 3, 1, 2)
-        # x = self.relu(self.bn_2(self.conv_2(x)))
-        # if self.dropout is not None:
-        #     x = self.dropout(x)
-
-        x = x + residual
-
-        return x
-
-
 class _GraphNonLocal(nn.Module):
     def __init__(self, adj, in_channels, inter_channels, dim=2):
         super(_GraphNonLocal, self).__init__()
@@ -116,13 +69,9 @@ class _GraphNonLocal(nn.Module):
         attentions = [_NonLocalBlock(adj, in_channels, inter_channels, dimension=dim) for _ in range(self.num_non_local)]
         self.attentions = nn.ModuleList(attentions)
 
-        self.relu = nn.ReLU(inplace=True)
+        self.conv = nn.Conv2d(in_channels, in_channels, 1, bias=False)
         self.bn = nn.BatchNorm2d(in_channels, momentum=0.1)
-        # for i, attention in enumerate(self.attentions):
-        #     self.add_module("attention_{}".format(i), attention)
-
-        # self.W = nn.Parameter(torch.zeros(size=(in_channels, in_channels), dtype=torch.float))
-        # nn.init.xavier_uniform_(self.W.data, gain=1.414)
+        self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
         # x: (B, T, K, C) --> (B*T, K, C)
@@ -143,7 +92,7 @@ class _GraphNonLocal(nn.Module):
 
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x.permute(0, 3, 1, 2)
-        x = self.relu(self.bn(x))
+        x = self.relu(self.bn(self.conv(x)))
 
         # x: (B, C, T, K) --> (B, T, K, C)
         x = x.permute(0, 2, 3, 1)
@@ -160,32 +109,28 @@ class GraphConvNonLocal(nn.Module):
             self.dropout = None
         hid_dim = output_dim
         self.relu = nn.ReLU(inplace=True)
-        self.adj = adj.matrix_power(3)
+        self.adj = adj.matrix_power(2)
 
         self.gconv1 = _GraphConv(adj, input_dim, hid_dim, p_dropout)
         self.gconv2 = _GraphConv(adj, hid_dim, output_dim, p_dropout)
 
         self.non_local = _GraphNonLocal(adj, input_dim, input_dim//4, dim=1)
-        self.cat_conv = nn.Conv2d(2*output_dim, output_dim, 1)
-        self.cat_bn = nn.BatchNorm2d(output_dim, momentum=0.1)
+        self.cat_conv = nn.Conv2d(3*output_dim, 2*output_dim, 1)
+        self.cat_bn = nn.BatchNorm2d(2*output_dim, momentum=0.1)
 
         # nn.init.constant_(self.cat_conv.bias, 0)
 
     def forward(self, x):
-        residual = x
-
         # x: (B, C, T, K) --> (B, T, K, C)
         x = x.permute(0, 2, 3, 1)
+        residual = x
         x_ = self.gconv1(x)
-        x_ = self.gconv2(x_)
-
         y_ = self.non_local(x)
-        x = torch.cat((x_, y_), dim=-1)
+        x = torch.cat((residual, x_, y_), dim=-1)
 
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x.permute(0, 3, 1, 2)
         x = self.relu(self.cat_bn(self.cat_conv(x)))
-        x = residual + x
         return x
 
 
@@ -212,7 +157,7 @@ class SpatialTemporalModelBase(nn.Module):
 
         self.pad = [filter_widths[0] // 2]
         self.expand_bn = nn.BatchNorm2d(channels, momentum=0.1)
-        self.shrink = nn.Conv2d(channels, 3, 1)
+        self.shrink = nn.Conv2d(8*channels, 3, 1)
 
         nn.init.constant_(self.shrink.bias, 0)
 
@@ -305,13 +250,13 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
             self.pad.append((filter_widths[i] - 1) * next_dilation // 2)
             self.causal_shift.append((filter_widths[i] // 2 * next_dilation) if causal else 0)
 
-            layers_conv.append(nn.Conv2d(channels, channels, (filter_widths[i], 1) if not dense else (2 * self.pad[-1] + 1, 1),
+            layers_conv.append(nn.Conv2d(2**i*channels, 2**i*channels, (filter_widths[i], 1) if not dense else (2 * self.pad[-1] + 1, 1),
                                          dilation=(next_dilation, 1) if not dense else (1, 1), bias=False))
-            layers_bn.append(nn.BatchNorm2d(channels, momentum=0.1))
-            layers_conv.append(nn.Conv2d(channels, channels, 1, dilation=1, bias=False))
-            layers_bn.append(nn.BatchNorm2d(channels, momentum=0.1))
+            layers_bn.append(nn.BatchNorm2d(2**i*channels, momentum=0.1))
+            layers_conv.append(nn.Conv2d(2**i*channels, 2**i*channels, 1, dilation=1, bias=False))
+            layers_bn.append(nn.BatchNorm2d(2**i*channels, momentum=0.1))
 
-            layers_graph_conv.append(GraphConvNonLocal(adj, channels, channels, p_dropout=None))
+            layers_graph_conv.append(GraphConvNonLocal(adj, 2**i*channels, 2**i*channels, p_dropout=None))
             # layers_non_local.append(_NonLocalBlock(channels, channels // 2, dimension=2, bn_layer=True))
 
             next_dilation *= filter_widths[i]
@@ -387,12 +332,12 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
             self.pad.append((filter_widths[i] - 1) * next_dilation // 2)
             self.causal_shift.append((filter_widths[i] // 2) if causal else 0)
 
-            layers_conv.append(nn.Conv2d(channels, channels, (filter_widths[i], 1), stride=(filter_widths[i], 1), bias=False))
-            layers_bn.append(nn.BatchNorm2d(channels, momentum=0.1))
-            layers_conv.append(nn.Conv2d(channels, channels, 1, dilation=1, bias=False))
-            layers_bn.append(nn.BatchNorm2d(channels, momentum=0.1))
+            layers_conv.append(nn.Conv2d(2**i*channels, 2**i*channels, (filter_widths[i], 1), stride=(filter_widths[i], 1), bias=False))
+            layers_bn.append(nn.BatchNorm2d(2**i*channels, momentum=0.1))
+            layers_conv.append(nn.Conv2d(2**i*channels, 2**i*channels, 1, dilation=1, bias=False))
+            layers_bn.append(nn.BatchNorm2d(2**i*channels, momentum=0.1))
 
-            layers_graph_conv.append(GraphConvNonLocal(adj, channels, channels, p_dropout=None))
+            layers_graph_conv.append(GraphConvNonLocal(adj, 2**i*channels, 2**i*channels, p_dropout=None))
             # layers_non_local.append(_NonLocalBlock(channels, channels // 2, dimension=2, bn_layer=True))
 
             next_dilation *= filter_widths[i]
