@@ -115,11 +115,14 @@ class _GraphNonLocal(nn.Module):
 
         attentions = [_NonLocalBlock(adj, in_channels, inter_channels, dimension=dim) for _ in range(self.num_non_local)]
         self.attentions = nn.ModuleList(attentions)
+
+        self.relu = nn.ReLU(inplace=True)
+        self.bn = nn.BatchNorm2d(in_channels, momentum=0.1)
         # for i, attention in enumerate(self.attentions):
         #     self.add_module("attention_{}".format(i), attention)
 
-        self.W = nn.Parameter(torch.zeros(size=(in_channels, in_channels), dtype=torch.float))
-        nn.init.xavier_uniform_(self.W.data, gain=1.414)
+        # self.W = nn.Parameter(torch.zeros(size=(in_channels, in_channels), dtype=torch.float))
+        # nn.init.xavier_uniform_(self.W.data, gain=1.414)
 
     def forward(self, x):
         # x: (B, T, K, C) --> (B*T, K, C)
@@ -134,9 +137,16 @@ class _GraphNonLocal(nn.Module):
         # x: (B*T, C, K) --> (B*T, K, C)
         x = x.permute(0, 2, 1).contiguous()
 
-        x = torch.matmul(x, self.W)
+        # x = torch.matmul(x, self.W)
         # x: (B*T, K, C) --> (B, T, K, C)
         x = x.view(*x_size)
+
+        # x: (B, T, K, C) --> (B, C, T, K)
+        x = x.permute(0, 3, 1, 2)
+        x = self.relu(self.bn(x))
+
+        # x: (B, C, T, K) --> (B, T, K, C)
+        x = x.permute(0, 2, 3, 1)
 
         return x
 
@@ -159,25 +169,23 @@ class GraphConvNonLocal(nn.Module):
         self.cat_conv = nn.Conv2d(2*output_dim, output_dim, 1)
         self.cat_bn = nn.BatchNorm2d(output_dim, momentum=0.1)
 
-        nn.init.constant_(self.cat_conv.bias, 0)
+        # nn.init.constant_(self.cat_conv.bias, 0)
 
     def forward(self, x):
+        residual = x
 
         # x: (B, C, T, K) --> (B, T, K, C)
         x = x.permute(0, 2, 3, 1)
+        x_ = self.gconv1(x)
+        x_ = self.gconv2(x_)
 
-        residual = x
-        x = self.gconv1(x)
-        x = self.gconv2(x)
-        x = residual + x
-
-        residual = x
-        x = self.non_local(x)
-        x = residual + x
+        y_ = self.non_local(x)
+        x = torch.cat((x_, y_), dim=-1)
 
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x.permute(0, 3, 1, 2)
-
+        x = self.relu(self.cat_bn(self.cat_conv(x)))
+        x = residual + x
         return x
 
 

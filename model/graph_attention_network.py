@@ -89,10 +89,7 @@ class _NonLocalBlock(nn.Module):
         y = y.permute(0, 2, 1).contiguous()
         y = y.view(batch_size, self.inter_channels, *x.size()[2:])
 
-        if self.concat:
-            return self.relu(y)
-        else:
-            return y
+        return y
 
 
 class GraphNonLocal(_NonLocalBlock):
