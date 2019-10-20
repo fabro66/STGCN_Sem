@@ -258,7 +258,7 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
         layers_graph_conv = []
         layers_bn = []
 
-        layers_graph_conv.append(GraphConvNonLocal(adj, channels, channels, dropout=dropout))
+        layers_graph_conv.append(GraphConvNonLocal(adj, channels, channels, dropout=None))
 
         self.causal_shift = [(filter_widths[0]) // 2 if causal else 0]
         next_dilation = filter_widths[0]
@@ -272,7 +272,7 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
             layers_conv.append(nn.Conv2d(2**i*channels, 2**i*channels, 1, dilation=1, bias=False))
             layers_bn.append(nn.BatchNorm2d(2**i*channels, momentum=0.1))
 
-            layers_graph_conv.append(GraphConvNonLocal(adj, 2**i*channels, 2**i*channels, dropout=dropout))
+            layers_graph_conv.append(GraphConvNonLocal(adj, 2**i*channels, 2**i*channels, dropout=None))
 
             next_dilation *= filter_widths[i]
 
@@ -288,7 +288,7 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x.permute(0, 3, 1, 2)
         x = self.relu(self.expand_bn(self.expand_conv(x)))
-        x = self.drop(self.layers_graph_conv[0](x))
+        x = self.layers_graph_conv[0](x)
 
         for i in range(len(self.pad) - 1):
             pad = self.pad[i + 1]
@@ -296,8 +296,8 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
             res = x[:, :, pad + shift: x.shape[2] - pad + shift]
 
             # x: (B, C, T, K)
-            x = self.drop(self.relu(self.layers_bn[2*i](self.layers_conv[2*i](x))))
-            x = res + self.drop(self.relu(self.layers_bn[2*i+1](self.layers_conv[2*i+1](x))))
+            x = self.relu(self.layers_bn[2*i](self.layers_conv[2*i](x)))
+            x = res + self.relu(self.layers_bn[2*i+1](self.layers_conv[2*i+1](x)))
 
             x = self.layers_graph_conv[i+1](x)
 
@@ -338,7 +338,7 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
         layers_graph_conv = []
         layers_bn = []
 
-        layers_graph_conv.append(GraphConvNonLocal(adj, channels, channels, dropout=dropout))
+        layers_graph_conv.append(GraphConvNonLocal(adj, channels, channels, dropout=None))
 
         self.causal_shift = [(filter_widths[0] // 2) if causal else 0]
         next_dilation = filter_widths[0]
@@ -351,7 +351,7 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
             layers_conv.append(nn.Conv2d(2**i*channels, 2**i*channels, 1, dilation=1, bias=False))
             layers_bn.append(nn.BatchNorm2d(2**i*channels, momentum=0.1))
 
-            layers_graph_conv.append(GraphConvNonLocal(adj, 2**i*channels, 2**i*channels, dropout=dropout))
+            layers_graph_conv.append(GraphConvNonLocal(adj, 2**i*channels, 2**i*channels, dropout=None))
 
             next_dilation *= filter_widths[i]
 
@@ -365,15 +365,15 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
     def _forward_blocks(self, x):
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x.permute(0, 3, 1, 2)
-        x = self.drop(self.relu(self.expand_bn(self.expand_conv(x))))
+        x = self.relu(self.expand_bn(self.expand_conv(x)))
         x = self.layers_graph_conv[0](x)
 
         for i in range(len(self.pad) - 1):
             res = x[:, :, self.causal_shift[i+1] + self.filter_widths[i+1]//2 :: self.filter_widths[i+1]]
 
             # x: (B, C, T, K)
-            x = self.drop(self.relu(self.layers_bn[2 * i](self.layers_conv[2 * i](x))))
-            x = res + self.drop(self.relu(self.layers_bn[2 * i + 1](self.layers_conv[2 * i + 1](x))))
+            x = self.relu(self.layers_bn[2 * i](self.layers_conv[2 * i](x)))
+            x = res + self.relu(self.layers_bn[2 * i + 1](self.layers_conv[2 * i + 1](x)))
 
             x = self.layers_graph_conv[i+1](x)
 
