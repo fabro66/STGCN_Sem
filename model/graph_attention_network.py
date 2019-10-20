@@ -45,10 +45,11 @@ class _NonLocalBlock(nn.Module):
                            kernel_size=1, stride=1, padding=0)
 
         self.concat_project = nn.Sequential(
-            nn.Conv2d(self.inter_channels * 2, 1, 1, 1, 0, bias=False),
+            nn.Conv2d(self.inter_channels * 2, 1, 1, 1, 0),
         )
 
         nn.init.kaiming_normal_(self.concat_project[0].weight)
+        nn.init.constant_(self.concat_project[0].bias, 0)
         nn.init.kaiming_normal_(self.g.weight)
         nn.init.constant_(self.g.bias, 0)
         nn.init.kaiming_normal_(self.theta.weight)
