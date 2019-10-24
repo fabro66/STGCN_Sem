@@ -267,7 +267,10 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
         layers_graph_conv = []
         layers_bn = []
 
-        layers_graph_conv.append(GraphConvNonLocal(adj, channels, channels, dropout=None))
+        c_exp = 0
+        if len(self.filter_widths) == 3:
+            layers_graph_conv.append(GraphConvNonLocal(adj, channels, channels, dropout=None))
+            c_exp += 1
 
         self.causal_shift = [(filter_widths[0]) // 2 if causal else 0]
         next_dilation = filter_widths[0]
@@ -275,13 +278,21 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
             self.pad.append((filter_widths[i] - 1) * next_dilation // 2)
             self.causal_shift.append((filter_widths[i] // 2 * next_dilation) if causal else 0)
 
-            layers_conv.append(nn.Conv2d(2**i*channels, 2**i*channels, (filter_widths[i], 1) if not dense else (2 * self.pad[-1] + 1, 1),
-                                         dilation=(next_dilation, 1) if not dense else (1, 1), bias=False))
-            layers_bn.append(nn.BatchNorm2d(2**i*channels, momentum=0.1))
-            layers_conv.append(nn.Conv2d(2**i*channels, 2**i*channels, 1, dilation=1, bias=False))
-            layers_bn.append(nn.BatchNorm2d(2**i*channels, momentum=0.1))
+            if len(filter_widths) - i < 4:
+                layers_conv.append(nn.Conv2d(2**c_exp*channels, 2**c_exp*channels, (filter_widths[i], 1) if not dense else (2 * self.pad[-1] + 1, 1),
+                                             dilation=(next_dilation, 1) if not dense else (1, 1), bias=False))
+                layers_bn.append(nn.BatchNorm2d(2**c_exp*channels, momentum=0.1))
+                layers_conv.append(nn.Conv2d(2**c_exp*channels, 2**c_exp*channels, 1, dilation=1, bias=False))
+                layers_bn.append(nn.BatchNorm2d(2**c_exp*channels, momentum=0.1))
 
-            layers_graph_conv.append(GraphConvNonLocal(adj, 2**i*channels, 2**i*channels, dropout=None))
+                layers_graph_conv.append(GraphConvNonLocal(adj, 2**c_exp*channels, 2**c_exp*channels, dropout=None))
+                c_exp += 1
+            else:
+                layers_conv.append(nn.Conv2d(channels, channels, (filter_widths[i], 1) if not dense else (2 * self.pad[-1] + 1, 1),
+                                             dilation=(next_dilation, 1) if not dense else (1, 1), bias=False))
+                layers_bn.append(nn.BatchNorm2d(channels, momentum=0.1))
+                layers_conv.append(nn.Conv2d(channels, channels, 1, dilation=1, bias=False))
+                layers_bn.append(nn.BatchNorm2d(channels, momentum=0.1))
 
             next_dilation *= filter_widths[i]
 
@@ -297,7 +308,9 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x.permute(0, 3, 1, 2)
         x = self.relu(self.expand_bn(self.expand_conv(x)))
-        x = self.layers_graph_conv[0](x)
+
+        if len(self.filter_widths) == 3:
+            x = self.layers_graph_conv[0](x)
 
         for i in range(len(self.pad) - 1):
             pad = self.pad[i + 1]
@@ -308,7 +321,8 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
             x = self.relu(self.layers_bn[2*i](self.layers_conv[2*i](x)))
             x = res + self.relu(self.layers_bn[2*i+1](self.layers_conv[2*i+1](x)))
 
-            x = self.layers_graph_conv[i+1](x)
+            if len(self.filter_widths) - i < 5:
+                x = self.layers_graph_conv[i - len(self.filter_widths) + 4](x)
 
         return x
 
@@ -347,7 +361,10 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
         layers_graph_conv = []
         layers_bn = []
 
-        layers_graph_conv.append(GraphConvNonLocal(adj, channels, channels, dropout=None))
+        c_exp = 0
+        if len(self.filter_widths) == 3:
+            layers_graph_conv.append(GraphConvNonLocal(adj, channels, channels, dropout=None))
+            c_exp += 1
 
         self.causal_shift = [(filter_widths[0] // 2) if causal else 0]
         next_dilation = filter_widths[0]
@@ -355,12 +372,21 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
             self.pad.append((filter_widths[i] - 1) * next_dilation // 2)
             self.causal_shift.append((filter_widths[i] // 2) if causal else 0)
 
-            layers_conv.append(nn.Conv2d(2**i*channels, 2**i*channels, (filter_widths[i], 1), stride=(filter_widths[i], 1), bias=False))
-            layers_bn.append(nn.BatchNorm2d(2**i*channels, momentum=0.1))
-            layers_conv.append(nn.Conv2d(2**i*channels, 2**i*channels, 1, dilation=1, bias=False))
-            layers_bn.append(nn.BatchNorm2d(2**i*channels, momentum=0.1))
+            if len(filter_widths) - i < 4:
 
-            layers_graph_conv.append(GraphConvNonLocal(adj, 2**i*channels, 2**i*channels, dropout=None))
+                layers_conv.append(nn.Conv2d(2**c_exp*channels, 2**c_exp*channels, (filter_widths[i], 1),
+                                             stride=(filter_widths[i], 1), bias=False))
+                layers_bn.append(nn.BatchNorm2d(2**c_exp*channels, momentum=0.1))
+                layers_conv.append(nn.Conv2d(2**c_exp*channels, 2**c_exp*channels, 1, dilation=1, bias=False))
+                layers_bn.append(nn.BatchNorm2d(2**c_exp*channels, momentum=0.1))
+
+                layers_graph_conv.append(GraphConvNonLocal(adj, 2**c_exp*channels, 2**c_exp*channels, dropout=None))
+                c_exp += 1
+            else:
+                layers_conv.append(nn.Conv2d(channels, channels, (filter_widths[i], 1), stride=(filter_widths[i], 1), bias=False))
+                layers_bn.append(nn.BatchNorm2d(channels, momentum=0.1))
+                layers_conv.append(nn.Conv2d(channels, channels, 1, dilation=1, bias=False))
+                layers_bn.append(nn.BatchNorm2d(channels, momentum=0.1))
 
             next_dilation *= filter_widths[i]
 
@@ -375,7 +401,9 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
         # x: (B, T, K, C) --> (B, C, T, K)
         x = x.permute(0, 3, 1, 2)
         x = self.relu(self.expand_bn(self.expand_conv(x)))
-        x = self.layers_graph_conv[0](x)
+
+        if len(self.filter_widths) == 3:
+            x = self.layers_graph_conv[0](x)
 
         for i in range(len(self.pad) - 1):
             res = x[:, :, self.causal_shift[i+1] + self.filter_widths[i+1]//2 :: self.filter_widths[i+1]]
@@ -384,7 +412,8 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
             x = self.relu(self.layers_bn[2 * i](self.layers_conv[2 * i](x)))
             x = res + self.relu(self.layers_bn[2 * i + 1](self.layers_conv[2 * i + 1](x)))
 
-            x = self.layers_graph_conv[i+1](x)
+            if len(self.filter_widths) - i < 5:
+                x = self.layers_graph_conv[i - len(self.filter_widths) + 4](x)
 
         return x
 
@@ -399,8 +428,8 @@ if __name__ == "__main__":
                              joints_left=[6, 7, 8, 9, 10, 16, 17, 18, 19, 20, 21, 22, 23],
                              joints_right=[1, 2, 3, 4, 5, 24, 25, 26, 27, 28, 29, 30, 31])
     adj = adj_mx_from_skeleton(h36m_skeleton)
-    model = SpatialTemporalModelOptimized1f(adj, num_joints_in=17, in_features=2, num_joints_out=17,
-                                            filter_widths=[3, 3, 3], channels=128)
+    model = SpatialTemporalModel(adj, num_joints_in=17, in_features=2, num_joints_out=17,
+                                            filter_widths=[3, 3, 3, 3], channels=128)
     model = model.cuda()
 
     model_params = 0
@@ -408,7 +437,7 @@ if __name__ == "__main__":
         model_params += parameter.numel()
 
     print('INFO: Trainable parameter count:', model_params)
-    input = torch.randn(2, 27, 17, 2)
+    input = torch.randn(2, 81, 17, 2)
     input = input.cuda()
 
     output = model(input)

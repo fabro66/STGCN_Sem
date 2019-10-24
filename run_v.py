@@ -419,11 +419,11 @@ if not args.evaluate:
         epoch += 1
 
         # Decay BatchNorm momentum
-        momentum = initial_momentum * np.exp(-epoch / args.epochs * np.log(initial_momentum / final_momentum))
-        if torch.cuda.device_count() > 1:
-            model_pos_train.module.set_bn_momentum(momentum)
-        else:
-            model_pos_train.set_bn_momentum(momentum)
+        # momentum = initial_momentum * np.exp(-epoch / args.epochs * np.log(initial_momentum / final_momentum))
+        # if torch.cuda.device_count() > 1:
+        #     model_pos_train.module.set_bn_momentum(momentum)
+        # else:
+        #     model_pos_train.set_bn_momentum(momentum)
 
         # Save checkpoint if necessary
         if epoch % args.checkpoint_frequency == 0:
