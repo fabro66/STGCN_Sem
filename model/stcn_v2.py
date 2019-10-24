@@ -300,7 +300,7 @@ class SpatialTemporalModel(SpatialTemporalModelBase):
         self.layers_bn = nn.ModuleList(layers_bn)
         self.layers_graph_conv = nn.ModuleList(layers_graph_conv)
 
-        for i in range(len(filter_widths)-1):
+        for i in range(len(self.layers_conv)):
             nn.init.kaiming_normal_(self.layers_conv[i].weight)
 
     def _forward_blocks(self, x):
@@ -394,7 +394,7 @@ class SpatialTemporalModelOptimized1f(SpatialTemporalModelBase):
         self.layers_bn = nn.ModuleList(layers_bn)
         self.layers_graph_conv = nn.ModuleList(layers_graph_conv)
 
-        for i in range(len(filter_widths)-1):
+        for i in range(len(self.layers_conv)):
             nn.init.kaiming_normal_(self.layers_conv[i].weight)
 
     def _forward_blocks(self, x):
