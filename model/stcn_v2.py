@@ -124,7 +124,6 @@ class GraphConvNonLocal(nn.Module):
         self.adj = adj.matrix_power(2)
 
         self.gconv1 = _GraphConv(adj, input_dim, hid_dim, dropout)
-        self.gconv2 = _GraphConv(adj, hid_dim, output_dim, dropout)
 
         self.non_local = _GraphNonLocal(adj, input_dim, input_dim//4, dim=1, dropout=dropout)
         self.cat_conv = nn.Conv2d(3*output_dim, 2*output_dim, 1)
@@ -132,6 +131,13 @@ class GraphConvNonLocal(nn.Module):
 
         nn.init.kaiming_normal_(self.cat_conv.weight)
         nn.init.constant_(self.cat_conv.bias, 0)
+
+    def set_graph_bn_momentum(self, momentum):
+        self.cat_bn.momentum = momentum
+        self.non_local.bn.momentum = momentum
+        self.gconv1.cat_bn.momentum = momentum
+        self.gconv1.bn_1.momentum = momentum
+        self.gconv1.bn_2.momentum = momentum
 
     def forward(self, x):
         # x: (B, C, T, K) --> (B, T, K, C)
@@ -182,6 +188,9 @@ class SpatialTemporalModelBase(nn.Module):
         self.expand_bn.momentum = momentum
         for bn in self.layers_bn:
             bn.momentum = momentum
+
+        for layers_graph_conv in self.layers_graph_conv:
+            layers_graph_conv.set_graph_bn_momentum(momentum)
 
     def receptive_field(self):
         """
