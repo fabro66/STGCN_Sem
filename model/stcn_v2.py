@@ -134,7 +134,7 @@ class GraphConvNonLocal(nn.Module):
 
     def set_graph_bn_momentum(self, momentum):
         self.cat_bn.momentum = momentum
-        self.non_local.bn.momentum = momentum
+        self.non_local.cat_bn.momentum = momentum
         self.gconv1.cat_bn.momentum = momentum
         self.gconv1.bn_1.momentum = momentum
         self.gconv1.bn_2.momentum = momentum
